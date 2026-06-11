@@ -168,6 +168,8 @@ function MatchRow({ m, me }: { m: Match; me: string }) {
   const k = fmtKickoff(m.utcDate)
   const live = isLive(m)
   const fin = isFinished(m)
+  // a presumed-live match has no scoreline yet — keep showing "vs", not 0 – 0
+  const showScore = (fin || live) && (m.homeScore != null || m.awayScore != null)
   const ho = ownerName(m.homeTeam), ao = ownerName(m.awayTeam)
   return (
     <div className={`match-row ${live ? "live" : ""}`}>
@@ -179,8 +181,8 @@ function MatchRow({ m, me }: { m: Match; me: string }) {
           <div className={`owner ${ownerId(m.homeTeam) === me ? "you" : ""}`}>{ho ? `↳ ${ho}` : "—"}</div>
         </div>
       </div>
-      <div className={`vs ${fin || live ? "score" : ""}`}>
-        {fin || live ? <>{m.homeScore ?? 0}<span style={{ color: "var(--text-4)" }}> – </span>{m.awayScore ?? 0}</> : "vs"}
+      <div className={`vs ${showScore ? "score" : ""}`}>
+        {showScore ? <>{m.homeScore ?? 0}<span style={{ color: "var(--text-4)" }}> – </span>{m.awayScore ?? 0}</> : "vs"}
       </div>
       <div className="team-side">
         <div className="flag-lg">{flagOf(m.awayTeam)}</div>
@@ -202,9 +204,12 @@ function MatchRow({ m, me }: { m: Match; me: string }) {
 export function MatchDayPage({ d }: { d: PageData }) {
   const { matches, me, standings } = d
   const live = matches.filter(isLive)
+    .sort((a, b) => (a.utcDate ?? "").localeCompare(b.utcDate ?? ""))
   const upcoming = matches.filter(isUpcoming)
     .sort((a, b) => (a.utcDate ?? "").localeCompare(b.utcDate ?? "")).slice(0, 4)
-  const hero = live[0]
+  // a confirmed in-play match with a real scoreline beats a presumed-live one
+  const hero = live.find((m) => m.status === "IN_PLAY" || m.status === "PAUSED") ?? live[0]
+  const alsoLive = live.filter((m) => m !== hero)
 
   return (
     <>
@@ -222,8 +227,12 @@ export function MatchDayPage({ d }: { d: PageData }) {
               <div className="own">OWNED BY <b>{ownerName(hero.homeTeam) ?? "—"}</b></div>
             </div>
             <div>
-              <div className="scorebox"><span>{hero.homeScore ?? 0}</span><span className="dash">–</span><span>{hero.awayScore ?? 0}</span></div>
-              <div className="scorebox minute">LIVE</div>
+              {hero.homeScore != null || hero.awayScore != null ? (
+                <div className="scorebox"><span>{hero.homeScore ?? 0}</span><span className="dash">–</span><span>{hero.awayScore ?? 0}</span></div>
+              ) : (
+                <div className="scorebox"><span className="dash">–</span></div>
+              )}
+              <div className="scorebox minute">{hero.homeScore != null || hero.awayScore != null ? "LIVE" : "KICKED OFF · SCORE PENDING"}</div>
             </div>
             <div className="hero-team">
               <div className="flag-xl">{flagOf(hero.awayTeam)}</div>
@@ -239,6 +248,13 @@ export function MatchDayPage({ d }: { d: PageData }) {
             <div className="section-title" style={{ fontSize: 44 }}>Nothing kicking off</div>
             <div className="section-sub">Tournament runs {TOURNAMENT.fromDate} → {TOURNAMENT.toDate}</div>
           </div>
+        </div>
+      )}
+
+      {alsoLive.length > 0 && (
+        <div className="card">
+          <div className="card-head"><h2>Also live</h2><span className="eyebrow">{alsoLive.length} more in play</span></div>
+          <div className="card-body tight">{alsoLive.map((m) => <MatchRow key={m.id} m={m} me={me} />)}</div>
         </div>
       )}
 

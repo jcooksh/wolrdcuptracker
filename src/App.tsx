@@ -109,9 +109,13 @@ export default function App() {
     }
   }, [])
 
+  // ticks each poll so time-based liveness (isMatchLive) re-evaluates even
+  // when a fetch fails and `matches` keeps the same reference
+  const [now, setNow] = React.useState(() => Date.now())
+
   React.useEffect(() => {
     load()
-    const id = setInterval(load, POLL_MS)
+    const id = setInterval(() => { setNow(Date.now()); load() }, POLL_MS)
     return () => clearInterval(id)
   }, [load])
 
@@ -141,7 +145,7 @@ export default function App() {
       updatedAt,
       reload: load,
     }
-  }, [matches, updatedAt, load])
+  }, [matches, updatedAt, load, now])
 
   const liveCount = data.totals.live
 

@@ -61,6 +61,26 @@ export interface Standing {
 
 const FINISHED = new Set(["FINISHED", "AWARDED"])
 const LIVE = new Set(["IN_PLAY", "PAUSED"])
+const NOT_STARTED = new Set(["SCHEDULED", "TIMED"])
+
+// football-data.org can lag flipping TIMED -> IN_PLAY (the WC 2026 opener was
+// still TIMED 90 minutes after kickoff), so a match whose scheduled kickoff has
+// passed also counts as live until the API catches up. Windows are generous to
+// cover delayed kickoffs and stoppage; knockout games get extra for ET + pens.
+const LIVE_WINDOW_MS = {
+  GROUP_STAGE: 3 * 60 * 60 * 1000,
+  KNOCKOUT: 4 * 60 * 60 * 1000,
+}
+
+export function isMatchLive(m: Match, now: number = Date.now()): boolean {
+  if (LIVE.has(m.status)) return true
+  if (!NOT_STARTED.has(m.status) || !m.utcDate) return false
+  const kickoff = Date.parse(m.utcDate)
+  if (Number.isNaN(kickoff)) return false
+  const windowMs =
+    m.stage === "GROUP_STAGE" ? LIVE_WINDOW_MS.GROUP_STAGE : LIVE_WINDOW_MS.KNOCKOUT
+  return now >= kickoff && now - kickoff < windowMs
+}
 
 function emptyTeam(team: string): TeamStats {
   return {
@@ -151,7 +171,7 @@ export function computeStandings(matches: Match[]): Standing[] {
   const teamStats = computeTeamStats(matches)
   const liveTeams = new Set<string>()
   for (const m of matches) {
-    if (LIVE.has(m.status)) {
+    if (isMatchLive(m)) {
       liveTeams.add(m.homeTeam)
       liveTeams.add(m.awayTeam)
     }

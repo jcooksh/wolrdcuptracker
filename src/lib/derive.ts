@@ -1,10 +1,9 @@
 // Derived views over the real match data for the dashboard pages:
 // per-team form/stage, per-participant recent form, and tournament-wide tallies.
 import { TEAM_OWNER, TEAM_OWNER_NAME } from "@/data/draft"
-import type { Match } from "@/lib/scoring"
+import { isMatchLive, type Match } from "@/lib/scoring"
 
 const FINISHED = new Set(["FINISHED", "AWARDED"])
-const LIVE = new Set(["IN_PLAY", "PAUSED"])
 const KNOCKOUT = new Set([
   "LAST_32", "LAST_16", "QUARTER_FINALS", "SEMI_FINALS", "THIRD_PLACE", "FINAL",
 ])
@@ -71,7 +70,7 @@ function teamResults(matches: Match[]) {
       ensure(team)
       if (KNOCKOUT.has(m.stage)) bump(team, m.stage)
     }
-    if (LIVE.has(m.status)) {
+    if (isMatchLive(m)) {
       if (TEAM_OWNER[m.homeTeam]) { ensure(m.homeTeam); live[m.homeTeam] = true }
       if (TEAM_OWNER[m.awayTeam]) { ensure(m.awayTeam); live[m.awayTeam] = true }
     }
@@ -141,7 +140,7 @@ export interface Totals {
 export function tournamentTotals(matches: Match[]): Totals {
   let live = 0, finished = 0, upcoming = 0, goals = 0
   for (const m of matches) {
-    if (LIVE.has(m.status)) live++
+    if (isMatchLive(m)) live++
     else if (FINISHED.has(m.status)) {
       finished++
       goals += (m.homeScore ?? 0) + (m.awayScore ?? 0)
@@ -150,6 +149,6 @@ export function tournamentTotals(matches: Match[]): Totals {
   return { played: finished + live, live, upcoming, finished, goals }
 }
 
-export const isLive = (m: Match) => LIVE.has(m.status)
+export const isLive = (m: Match) => isMatchLive(m)
 export const isFinished = (m: Match) => FINISHED.has(m.status)
-export const isUpcoming = (m: Match) => !LIVE.has(m.status) && !FINISHED.has(m.status)
+export const isUpcoming = (m: Match) => !isMatchLive(m) && !FINISHED.has(m.status)
