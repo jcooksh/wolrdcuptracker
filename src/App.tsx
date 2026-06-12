@@ -6,6 +6,9 @@ import {
   buildTeamRows, participantForm, knockoutCount, tournamentTotals,
 } from "@/lib/derive"
 import {
+  fetchLiveOverrides, applyLiveOverrides, emptyOverlay, type LiveOverlay,
+} from "@/lib/livescores"
+import {
   StandingsPage, MatchDayPage, FixturesPage, BracketPage,
   PlayersPage, TeamsPage, StatsPage, RulesPage, AdminPage,
   type PageData,
@@ -94,17 +97,37 @@ export default function App() {
     }
   }
 
+  // base fixtures (built JSON) and the ESPN live overlay are fetched
+  // independently so either can fail without losing the other
+  const baseRef = React.useRef<Match[]>([])
+  const liveRef = React.useRef<LiveOverlay>(emptyOverlay())
+  const inflight = React.useRef(false)
+
   const load = React.useCallback(async () => {
+    if (inflight.current) return
+    inflight.current = true
     setLoading(true)
     try {
-      const url = `${import.meta.env.BASE_URL}data/matches.json?t=${Date.now()}`
-      const res = await fetch(url, { cache: "no-store" })
-      const data: MatchesFile = await res.json()
-      setMatches(data.matches ?? [])
-      setUpdatedAt(data.updatedAt ?? null)
-    } catch {
-      /* keep last good data */
+      try {
+        const url = `${import.meta.env.BASE_URL}data/matches.json?t=${Date.now()}`
+        const res = await fetch(url, { cache: "no-store" })
+        const data: MatchesFile = await res.json()
+        baseRef.current = data.matches ?? []
+        setUpdatedAt(data.updatedAt ?? null)
+      } catch {
+        /* keep last good base data */
+      }
+      try {
+        liveRef.current = {
+          fetchedAt: Date.now(),
+          map: await fetchLiveOverrides(liveRef.current.map),
+        }
+      } catch {
+        /* keep last overlay; stale IN_PLAY entries stop applying after 15min */
+      }
+      setMatches(applyLiveOverrides(baseRef.current, liveRef.current))
     } finally {
+      inflight.current = false
       setLoading(false)
     }
   }, [])

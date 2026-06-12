@@ -28,6 +28,7 @@ export interface Match {
   awayTeam: string
   homeScore: number | null
   awayScore: number | null
+  minute?: string // live clock from the ESPN overlay, e.g. "67'"
 }
 
 export interface TeamStats {

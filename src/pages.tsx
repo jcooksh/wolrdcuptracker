@@ -173,7 +173,7 @@ function MatchRow({ m, me }: { m: Match; me: string }) {
   const ho = ownerName(m.homeTeam), ao = ownerName(m.awayTeam)
   return (
     <div className={`match-row ${live ? "live" : ""}`}>
-      <div className="when">{k.day}<span className="big">{live ? "LIVE" : fin ? "FT" : k.time}</span></div>
+      <div className="when">{k.day}<span className="big">{live ? (m.minute ?? "LIVE") : fin ? "FT" : k.time}</span></div>
       <div className="team-side">
         <div className="flag-lg">{flagOf(m.homeTeam)}</div>
         <div>
@@ -232,7 +232,7 @@ export function MatchDayPage({ d }: { d: PageData }) {
               ) : (
                 <div className="scorebox"><span className="dash">–</span></div>
               )}
-              <div className="scorebox minute">{hero.homeScore != null || hero.awayScore != null ? "LIVE" : "KICKED OFF · SCORE PENDING"}</div>
+              <div className="scorebox minute">{hero.homeScore != null || hero.awayScore != null ? (hero.minute ?? "LIVE") : "KICKED OFF · SCORE PENDING"}</div>
             </div>
             <div className="hero-team">
               <div className="flag-xl">{flagOf(hero.awayTeam)}</div>
