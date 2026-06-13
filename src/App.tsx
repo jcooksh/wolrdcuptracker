@@ -1,6 +1,6 @@
 import * as React from "react"
 
-import { PARTICIPANTS, TOURNAMENT } from "@/data/draft"
+import { PARTICIPANTS } from "@/data/draft"
 import { computeStandings, type Match } from "@/lib/scoring"
 import {
   buildTeamRows, participantForm, knockoutCount, tournamentTotals,
@@ -9,8 +9,8 @@ import {
   fetchLiveOverrides, applyLiveOverrides, emptyOverlay, type LiveOverlay,
 } from "@/lib/livescores"
 import {
-  StandingsPage, MatchDayPage, FixturesPage, BracketPage,
-  PlayersPage, TeamsPage, StatsPage, RulesPage, AdminPage,
+  StandingsPage, MatchDayPage, BracketPage, PlayersPage,
+  TeamsPage, StatsPage, RulesPage, AdminPage,
   type PageData,
 } from "@/pages"
 import { DankFx, playAirhorn, playOof } from "@/dank"
@@ -24,46 +24,35 @@ interface MatchesFile {
 }
 
 type RouteKey =
-  | "standings" | "matchday" | "fixtures" | "bracket"
-  | "players" | "teams" | "stats" | "rules" | "admin"
+  | "standings" | "matchday" | "bracket" | "players"
+  | "teams" | "stats" | "rules" | "admin"
 
-const ROUTE_META: Record<RouteKey, { title: string; sub: string }> = {
-  standings: { title: "Standings", sub: "live · 11 players" },
-  matchday: { title: "Match Day", sub: "live now" },
-  fixtures: { title: "Fixtures & Results", sub: "104 matches · jun–jul" },
-  bracket: { title: "Bracket", sub: "knockout tree" },
-  players: { title: "Players", sub: "11 owners · 48 teams" },
-  teams: { title: "Teams", sub: "48 nations" },
-  stats: { title: "Stats & Records", sub: "live tracker" },
-  rules: { title: "Rules", sub: "scoring · tie-breaks" },
-  admin: { title: "Admin", sub: "draft · data" },
-}
+const TABS: Array<{ key: RouteKey; label: string; ico: string }> = [
+  { key: "standings", label: "Standings", ico: "🏆" },
+  { key: "matchday", label: "Match Day", ico: "⚽" },
+  { key: "bracket", label: "Bracket", ico: "🗺️" },
+  { key: "players", label: "Players", ico: "👥" },
+  { key: "teams", label: "Teams", ico: "🌍" },
+  { key: "stats", label: "Stats", ico: "📊" },
+  { key: "rules", label: "Rules", ico: "📖" },
+  { key: "admin", label: "Admin", ico: "⚙️" },
+]
 
-// ── sidebar icons ──
-const I = {
-  standings: <path d="M4 19h16M6 16V8M12 16V4M18 16v-6" />,
-  matchday: <><circle cx="12" cy="12" r="9" /><path d="M12 3v18M3 12h18" /></>,
-  fixtures: <><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 9h18M8 3v4M16 3v4" /></>,
-  bracket: <path d="M4 6h5v5M4 13h5v5M15 9h5M15 9l-6-3M15 9l-6 3M15 15h5M15 15l-6 0M15 15l-6 3" />,
-  players: <><circle cx="9" cy="8" r="3" /><circle cx="17" cy="9" r="2" /><path d="M3 20c0-3 3-5 6-5s6 2 6 5M14 20c0-2 2-4 4-4s3 2 3 4" /></>,
-  teams: <path d="M12 2l9 4-9 4-9-4 9-4zM3 12l9 4 9-4M3 18l9 4 9-4" />,
-  stats: <><path d="M3 3v18h18" /><path d="M7 14l4-4 3 3 5-6" /></>,
-  rules: <><path d="M6 3h9l5 5v13H6z" /><path d="M14 3v6h6" /><path d="M9 13h7M9 17h5" /></>,
-  admin: <><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 0 0-.1-1.2l2.1-1.6-2-3.4-2.5.9a7 7 0 0 0-2.1-1.2L14 3h-4l-.4 2.5a7 7 0 0 0-2.1 1.2l-2.5-.9-2 3.4 2.1 1.6A7 7 0 0 0 5 12a7 7 0 0 0 .1 1.2l-2.1 1.6 2 3.4 2.5-.9a7 7 0 0 0 2.1 1.2L10 21h4l.4-2.5a7 7 0 0 0 2.1-1.2l2.5.9 2-3.4-2.1-1.6c.1-.4.1-.8.1-1.2z" /></>,
-}
-
-function Ico({ d }: { d: React.ReactNode }) {
-  return (
-    <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-      {d}
-    </svg>
-  )
+const ROUTES = new Set<string>(TABS.map((t) => t.key))
+// old/design deep links keep working
+const ROUTE_ALIAS: Record<string, RouteKey> = {
+  fixtures: "matchday", matches: "matchday", pairs: "players",
 }
 
 function parseHash(): { route: RouteKey; param: string } {
   const segs = location.hash.replace(/^#\/?/, "").split("/")
-  const route = (ROUTE_META[segs[0] as RouteKey] ? segs[0] : "standings") as RouteKey
-  return { route, param: segs[1] ?? "" }
+  const raw = ROUTE_ALIAS[segs[0]] ?? segs[0]
+  if (ROUTES.has(raw)) return { route: raw as RouteKey, param: segs[1] ?? "" }
+  const stored = localStorage.getItem("ct-tab")
+  return {
+    route: stored && ROUTES.has(stored) ? (stored as RouteKey) : "standings",
+    param: "",
+  }
 }
 
 export default function App() {
@@ -71,7 +60,6 @@ export default function App() {
   const [updatedAt, setUpdatedAt] = React.useState<string | null>(null)
   const [loading, setLoading] = React.useState(true)
   const [{ route, param }, setNav] = React.useState(parseHash())
-  const [navOpen, setNavOpen] = React.useState(false)
 
   // ── ULTRA MEGA DANK MODE (triple-click bottom-right corner) ──
   const [dank, setDank] = React.useState(() => localStorage.getItem("dank") === "1")
@@ -143,10 +131,15 @@ export default function App() {
   }, [load])
 
   React.useEffect(() => {
-    const onHash = () => { setNav(parseHash()); setNavOpen(false) }
+    const onHash = () => setNav(parseHash())
     window.addEventListener("hashchange", onHash)
     return () => window.removeEventListener("hashchange", onHash)
   }, [])
+
+  React.useEffect(() => {
+    localStorage.setItem("ct-tab", route)
+    window.scrollTo(0, 0)
+  }, [route, param])
 
   const data: PageData = React.useMemo(() => {
     const standings = computeStandings(matches)
@@ -157,6 +150,27 @@ export default function App() {
       formByParticipant[p.id] = participantForm(matches, p.teams)
       koByParticipant[p.id] = knockoutCount(matches, p.teams)
     }
+    // movement vs the table at the start of today (UTC) — powers the ▲/▼ tags.
+    // Keep every fixture (so the knockout-appearance bonus matches the live
+    // table) but strip the result of anything that kicked off today, so only
+    // today's finished games can move a player's rank. Filtering fixtures out
+    // entirely would drop their +4 KO bonus and show phantom arrows for days.
+    const dayStart = new Date(now)
+    dayStart.setUTCHours(0, 0, 0, 0)
+    const before = matches.map((m) => {
+      const t = m.utcDate ? Date.parse(m.utcDate) : NaN
+      if (!Number.isNaN(t) && t >= dayStart.getTime()) {
+        return { ...m, status: "TIMED", homeScore: null, awayScore: null }
+      }
+      return m
+    })
+    const prevRank: Record<string, number> = {}
+    computeStandings(before).forEach((s) => { prevRank[s.participant.id] = s.rank })
+    const mvByParticipant: Record<string, number> = {}
+    standings.forEach((s) => {
+      const prev = prevRank[s.participant.id]
+      mvByParticipant[s.participant.id] = prev ? prev - s.rank : 0
+    })
     return {
       me: ME,
       matches,
@@ -165,6 +179,7 @@ export default function App() {
       totals: tournamentTotals(matches),
       formByParticipant,
       koByParticipant,
+      mvByParticipant,
       updatedAt,
       reload: load,
     }
@@ -172,29 +187,11 @@ export default function App() {
 
   const liveCount = data.totals.live
 
-  const nav = (
-    key: RouteKey,
-    label: string,
-    badge?: React.ReactNode,
-    badgeLive?: boolean
-  ) => (
-    <a
-      href={`#/${key}`}
-      className={route === key ? "active" : ""}
-      onClick={() => setNavOpen(false)}
-    >
-      <Ico d={I[key]} />
-      {label}
-      {badge != null && (
-        <span className={badgeLive ? "badge live" : "badge"}>{badge}</span>
-      )}
-    </a>
-  )
+  const go = (key: RouteKey) => { location.hash = `#/${key}` }
 
   const PAGES: Record<RouteKey, React.ReactNode> = {
     standings: <StandingsPage d={data} />,
     matchday: <MatchDayPage d={data} />,
-    fixtures: <FixturesPage d={data} />,
     bracket: <BracketPage d={data} />,
     players: <PlayersPage d={data} playerId={param} />,
     teams: <TeamsPage d={data} />,
@@ -205,66 +202,52 @@ export default function App() {
 
   return (
     <div className="app">
-      <div className={navOpen ? "scrim show" : "scrim"} onClick={() => setNavOpen(false)} />
-      <aside className={navOpen ? "sidebar open" : "sidebar"}>
-        <div className="brand">
-          <div className="brand-mark">W</div>
-          <div className="brand-name">
-            Sweepstake
-            <small>WC 26 · {TOURNAMENT.host ?? "USA / CAN / MEX"}</small>
-          </div>
-        </div>
+      <div className="accentbar"><i /><i /><i /><i /><i /></div>
 
-        <div className="nav-section">Tournament</div>
-        <nav className="nav">
-          {nav("standings", "Standings")}
-          {nav("matchday", "Match Day", liveCount > 0 ? `${liveCount} LIVE` : undefined, true)}
-          {nav("fixtures", "Fixtures & Results")}
-          {nav("bracket", "Bracket")}
-        </nav>
-
-        <div className="nav-section">Squad</div>
-        <nav className="nav">
-          {nav("players", "Players", PARTICIPANTS.length)}
-          {nav("teams", "Teams", 48)}
-          {nav("stats", "Stats & Records")}
-        </nav>
-
-        <div className="nav-section">Meta</div>
-        <nav className="nav">
-          {nav("rules", "Rules")}
-          {nav("admin", "Admin")}
-        </nav>
-
-        <div className="sidebar-footer">
-          <div className="avatar">W</div>
-          <div className="who">
-            <div className="me">Sweepstake</div>
-            <div className="rank">{PARTICIPANTS.length} PLAYERS · WC 26</div>
-          </div>
-        </div>
-      </aside>
-
-      <main className="main">
+      <div className="wrap head">
         <header className="topbar">
-          <button className="btn menu-toggle" onClick={() => setNavOpen((o) => !o)} aria-label="Menu">
-            <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M3 6h18M3 12h18M3 18h18" /></svg>
-          </button>
-          <h1>{ROUTE_META[route].title}</h1>
-          <span className="sub">{ROUTE_META[route].sub}</span>
-          <div className="spacer" />
-          <div className={liveCount > 0 ? "live-pulse on" : "live-pulse"}>
-            <span className="pip" />
-            {liveCount > 0 ? `${liveCount} LIVE NOW` : "NO LIVE GAMES"}
+          <div
+            className="logo"
+            role="button"
+            tabIndex={0}
+            onClick={() => go("standings")}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go("standings") } }}
+          >
+            <div className="ball">C</div>
+            <div className="wm">CUP<span>TRACK</span></div>
           </div>
-          <button className="btn" onClick={load} disabled={loading}>
-            <svg className={loading ? "ico spin" : "ico"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5" /></svg>
-            Refresh
+          <div className="spacer" />
+          <span className="hostflags" title="Hosts: USA · Canada · Mexico">🇺🇸 🇨🇦 🇲🇽</span>
+          {liveCount > 0 && (
+            <span className="live-pill"><span className="pip" />{liveCount} LIVE</span>
+          )}
+          <button className="ghost-btn" onClick={load} disabled={loading}>
+            {loading ? "↻ Updating…" : "↻ Refresh"}
           </button>
         </header>
+      </div>
 
-        <div className="content">{PAGES[route]}</div>
-      </main>
+      <nav className="nav">
+        <div className="nav-inner">
+          {TABS.map((t) => (
+            <a
+              key={t.key}
+              href={`#/${t.key}`}
+              className={route === t.key ? "tab active" : "tab"}
+            >
+              <span className="ico">{t.ico}</span>
+              {t.label}
+              {t.key === "matchday" && liveCount > 0 && (
+                <span className="badge">{liveCount}</span>
+              )}
+            </a>
+          ))}
+        </div>
+      </nav>
+
+      <div className="wrap">
+        <main className="page" key={`${route}/${param}`}>{PAGES[route]}</main>
+      </div>
 
       {/* secret dank-mode trigger — triple-click me */}
       <div className="dank-corner" onClick={cornerClick} aria-hidden />

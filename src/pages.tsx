@@ -1,3 +1,4 @@
+import * as React from "react"
 import { useState } from "react"
 
 import { PARTICIPANTS, TEAM_OWNER, TEAM_OWNER_NAME, TOURNAMENT } from "@/data/draft"
@@ -16,16 +17,33 @@ export interface PageData {
   totals: Totals
   formByParticipant: Record<string, string>
   koByParticipant: Record<string, number>
+  mvByParticipant: Record<string, number>
   updatedAt: string | null
   reload: () => void
 }
 
 const TOTAL_MATCHES = 104
-const TEAM_OWNER_NAME_BY_ID: Record<string, string> =
-  Object.fromEntries(PARTICIPANTS.map((p) => [p.id, p.name]))
+
+/* one vivid colour per owner — same palette as the design system */
+const PALETTE = [
+  "#2E5BFF", "#FF4E36", "#07A085", "#F25C8E", "#FFB02E", "#1592C9",
+  "#7A5BFF", "#5C9A00", "#E8590C", "#B83280", "#0B7285",
+]
+const COLOR: Record<string, string> = Object.fromEntries(
+  PARTICIPANTS.map((p, i) => [p.id, PALETTE[i % PALETTE.length]])
+)
+const colorOf = (pid?: string) => (pid ? COLOR[pid] ?? "#928876" : "#928876")
+
 const ownerName = (team: string): string | undefined => TEAM_OWNER_NAME[team]
 const ownerId = (team: string): string | undefined => TEAM_OWNER[team]
 const gdStr = (gd: number) => `${gd >= 0 ? "+" : ""}${gd}`
+
+const ABBR: Record<string, string> = {
+  "South Korea": "KOR", "Saudi Arabia": "KSA", "South Africa": "RSA",
+  "New Zealand": "NZL", "Czech Republic": "CZE", "Ivory Coast": "CIV",
+  "Cape Verde": "CPV", USA: "USA", "Curaçao": "CUW",
+}
+const abbr = (t: string) => ABBR[t] ?? t.slice(0, 3).toUpperCase()
 
 function fmtKickoff(iso?: string) {
   if (!iso) return { day: "TBD", time: "--:--" }
@@ -36,681 +54,716 @@ function fmtKickoff(iso?: string) {
   }
 }
 
-// W/D/L pips from a form string ("WDLWW"); shows dashes when empty.
-function Wdl({ form }: { form: string }) {
-  const chars = form.slice(-5).split("")
+const byDate = (a: Match, b: Match) => (a.utcDate ?? "").localeCompare(b.utcDate ?? "")
+
+function groupByDay(ms: Match[]): Array<{ day: string; ms: Match[] }> {
+  const groups: Array<{ day: string; ms: Match[] }> = []
+  for (const m of ms) {
+    const day = fmtKickoff(m.utcDate).day
+    const last = groups[groups.length - 1]
+    if (last && last.day === day) last.ms.push(m)
+    else groups.push({ day, ms: [m] })
+  }
+  return groups
+}
+
+/* ── shared bits ───────────────────────────────────────────── */
+function MvTag({ mv }: { mv: number }) {
+  if (mv > 0) return <span className="mv up">▲{mv}</span>
+  if (mv < 0) return <span className="mv down">▼{-mv}</span>
+  return <span className="mv same">–</span>
+}
+
+function FormPips({ form }: { form: string }) {
+  const chars = form.slice(-5).split("").filter(Boolean)
   if (chars.length === 0) {
     return (
-      <span className="wdl">
+      <div className="form">
         {[0, 1, 2].map((i) => <span key={i} className="none">·</span>)}
-      </span>
+      </div>
     )
   }
   return (
-    <span className="wdl">
+    <div className="form">
       {chars.map((c, i) => (
         <span key={i} className={c === "W" ? "w" : c === "D" ? "d" : "l"}>{c}</span>
       ))}
+    </div>
+  )
+}
+
+function OwnerLine({ team }: { team: string }) {
+  const o = ownerName(team)
+  if (!o) return null
+  return (
+    <div className="ownline">
+      <span className="dotc" style={{ background: colorOf(ownerId(team)) }} />
+      {o}
+    </div>
+  )
+}
+
+/* ── hero: next fixture instead of a tagline ──────────────── */
+function NextUp({ matches }: { matches: Match[] }) {
+  const now = Date.now()
+  const next = matches
+    .filter((m) => isUpcoming(m) && m.utcDate && Date.parse(m.utcDate) > now)
+    .sort(byDate)[0]
+  if (!next) return <div className="eyebrow">{TOURNAMENT.title}</div>
+  const k = fmtKickoff(next.utcDate)
+  const Side = ({ team }: { team: string }) => (
+    <span className="nu-team">
+      <span className="nu-fl">{flagOf(team)}</span>
+      <span className="nu-tn">{team}</span>
+      {ownerName(team) ? (
+        <span className="nu-own">
+          <span className="dotc" style={{ background: colorOf(ownerId(team)) }} />
+          {ownerName(team)}
+        </span>
+      ) : (
+        <span className="nu-own none">unpicked</span>
+      )}
     </span>
   )
-}
-
-/* ============================================================ STANDINGS */
-export function StandingsPage({ d }: { d: PageData }) {
-  const { standings, totals, me, formByParticipant, koByParticipant } = d
-  const top3 = standings.slice(0, 3)
-  const totalPts = standings.reduce((a, s) => a + s.points, 0)
-  const totalGoals = standings.reduce((a, s) => a + s.gf, 0)
-  const inKo = standings.filter((s) => koByParticipant[s.participant.id] > 0).length
-  const leader = standings[0]
-
   return (
-    <>
-      <div className="statstrip">
-        <div className="stat">
-          <div className="lbl">Matches played</div>
-          <div className="v">{totals.played}<span className="unit">/ {TOTAL_MATCHES}</span></div>
-          <div className="meta">{totals.upcoming} upcoming · {totals.live} live</div>
-        </div>
-        <div className="stat accent">
-          <div className="lbl">Total points awarded</div>
-          <div className="v">{totalPts}</div>
-          <div className="meta">{totalGoals} goals · {inKo} owners in KO</div>
-        </div>
-        <div className="stat live">
-          <div className="lbl">Live now</div>
-          <div className="v">{totals.live}</div>
-          <div className="meta">{totals.live > 0 ? "matches in play" : "no games kicked off"}</div>
-        </div>
-        <div className="stat">
-          <div className="lbl">Current leader</div>
-          <div className="v" style={{ fontSize: 30 }}>{leader?.participant.name ?? "–"}</div>
-          <div className="meta">{leader?.points ?? 0} pts · GD {gdStr(leader?.gd ?? 0)}</div>
-        </div>
-      </div>
-
-      <div>
-        <div className="section-sub" style={{ marginBottom: 14 }}>Podium</div>
-        <div className="podium-row">
-          {top3.map((s, i) => (
-            <div key={s.participant.id} className={`podium-card r${i + 1}`}>
-              <div className="place">{i + 1}</div>
-              <div className="eyebrow">{["1st", "2nd", "3rd"][i]}</div>
-              <div className="nm">{s.participant.name}</div>
-              <div className="pts">{s.points}<span className="unit">PTS</span></div>
-              <div className="meta">{s.won}W · {s.drawn}D · {s.lost}L · GD {gdStr(s.gd)}</div>
-              <div className="teams-mini">
-                {s.participant.teams.map((t) => (
-                  <span key={t} className="team-chip"><span className="flag">{flagOf(t)}</span>{t}</span>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-head">
-          <h2>Full Table</h2>
-          <span className="eyebrow">{PARTICIPANTS.length} owners · live</span>
-          <div className="spacer" />
-          <span className="chip">Sort · POINTS</span>
-        </div>
-        <div className="card-body tight">
-          <table className="leaderboard">
-            <thead>
-              <tr>
-                <th style={{ width: 60 }}>#</th>
-                <th>Player</th>
-                <th style={{ width: 130 }}>Form</th>
-                <th style={{ width: 50, textAlign: "right" }}>P</th>
-                <th style={{ width: 60, textAlign: "right" }}>GD</th>
-                <th style={{ width: 50, textAlign: "right" }}>GF</th>
-                <th style={{ width: 110 }}>Status</th>
-                <th style={{ width: 90, textAlign: "right" }}>PTS</th>
-              </tr>
-            </thead>
-            <tbody>
-              {standings.map((s, i) => {
-                const p = s.participant
-                const isMe = p.id === me
-                return (
-                  <tr key={p.id} className={isMe ? "me" : ""}>
-                    <td><span className={`rank-cell ${i === 0 ? "g" : i === 1 ? "s" : i === 2 ? "b" : ""}`}>{i + 1}</span></td>
-                    <td>
-                      <div className="player-cell">
-                        <div className="av">{initialsOf(p.name)}</div>
-                        <div>
-                          <div className="nm">{p.name}{isMe && <span className="me-tag">YOU</span>}</div>
-                          <div className="sub">{p.teams.length} TEAMS · {koByParticipant[p.id]} IN KO</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td><Wdl form={formByParticipant[p.id] ?? ""} /></td>
-                    <td className="num">{s.played}</td>
-                    <td className={`gd-cell ${s.gd > 0 ? "pos" : s.gd < 0 ? "neg" : ""}`}>{gdStr(s.gd)}</td>
-                    <td className="num">{s.gf}</td>
-                    <td>{s.liveMatches > 0 ? <span className="chip live">{s.liveMatches} live</span> : <span className="chip">—</span>}</td>
-                    <td className={`pts-cell ${i === 0 ? "lead" : ""}`}>{s.points}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </>
-  )
-}
-
-/* ============================================================ MATCH ROW */
-function MatchRow({ m, me }: { m: Match; me: string }) {
-  const k = fmtKickoff(m.utcDate)
-  const live = isLive(m)
-  const fin = isFinished(m)
-  // a presumed-live match has no scoreline yet — keep showing "vs", not 0 – 0
-  const showScore = (fin || live) && (m.homeScore != null || m.awayScore != null)
-  const ho = ownerName(m.homeTeam), ao = ownerName(m.awayTeam)
-  return (
-    <div className={`match-row ${live ? "live" : ""}`}>
-      <div className="when">{k.day}<span className="big">{live ? (m.minute ?? "LIVE") : fin ? "FT" : k.time}</span></div>
-      <div className="team-side">
-        <div className="flag-lg">{flagOf(m.homeTeam)}</div>
-        <div>
-          <div className="team-name">{m.homeTeam}</div>
-          <div className={`owner ${ownerId(m.homeTeam) === me ? "you" : ""}`}>{ho ? `↳ ${ho}` : "—"}</div>
-        </div>
-      </div>
-      <div className={`vs ${showScore ? "score" : ""}`}>
-        {showScore ? <>{m.homeScore ?? 0}<span style={{ color: "var(--text-4)" }}> – </span>{m.awayScore ?? 0}</> : "vs"}
-      </div>
-      <div className="team-side">
-        <div className="flag-lg">{flagOf(m.awayTeam)}</div>
-        <div>
-          <div className="team-name">{m.awayTeam}</div>
-          <div className={`owner ${ownerId(m.awayTeam) === me ? "you" : ""}`}>{ao ? `↳ ${ao}` : "—"}</div>
-        </div>
-      </div>
-      <div className="stage">
-        {live && <span className="chip live">LIVE</span>}
-        {fin && <span className="chip">FT</span>}
-        <div style={{ marginTop: 4 }}>{STAGE_SHORT[m.stage] ?? m.stage}</div>
+    <div className="nextup">
+      <div className="nu-lbl"><span className="nu-pip" />Next up · {k.day} · {k.time} kickoff</div>
+      <div className="nu-fix">
+        <Side team={next.homeTeam} />
+        <span className="nu-v">v</span>
+        <Side team={next.awayTeam} />
       </div>
     </div>
   )
 }
 
-/* ============================================================ MATCH DAY */
-export function MatchDayPage({ d }: { d: PageData }) {
-  const { matches, me, standings } = d
-  const live = matches.filter(isLive)
-    .sort((a, b) => (a.utcDate ?? "").localeCompare(b.utcDate ?? ""))
-  const upcoming = matches.filter(isUpcoming)
-    .sort((a, b) => (a.utcDate ?? "").localeCompare(b.utcDate ?? "")).slice(0, 4)
-  // a confirmed in-play match with a real scoreline beats a presumed-live one
-  const hero = live.find((m) => m.status === "IN_PLAY" || m.status === "PAUSED") ?? live[0]
-  const alsoLive = live.filter((m) => m !== hero)
-
-  return (
-    <>
-      {hero ? (
-        <div className="hero-match">
-          <div className="stripe" />
-          <div className="row1">
-            <span className="chip live">LIVE</span>
-            <span className="stage">{STAGE_LABEL[hero.stage] ?? hero.stage}</span>
-          </div>
-          <div className="vs-grid">
-            <div className="hero-team">
-              <div className="flag-xl">{flagOf(hero.homeTeam)}</div>
-              <div className="nm">{hero.homeTeam}</div>
-              <div className="own">OWNED BY <b>{ownerName(hero.homeTeam) ?? "—"}</b></div>
-            </div>
-            <div>
-              {hero.homeScore != null || hero.awayScore != null ? (
-                <div className="scorebox"><span>{hero.homeScore ?? 0}</span><span className="dash">–</span><span>{hero.awayScore ?? 0}</span></div>
-              ) : (
-                <div className="scorebox"><span className="dash">–</span></div>
-              )}
-              <div className="scorebox minute">{hero.homeScore != null || hero.awayScore != null ? (hero.minute ?? "LIVE") : "KICKED OFF · SCORE PENDING"}</div>
-            </div>
-            <div className="hero-team">
-              <div className="flag-xl">{flagOf(hero.awayTeam)}</div>
-              <div className="nm">{hero.awayTeam}</div>
-              <div className="own">OWNED BY <b>{ownerName(hero.awayTeam) ?? "—"}</b></div>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className="hero-match" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
-          <div className="row1"><span className="chip">NO LIVE GAMES</span></div>
-          <div style={{ textAlign: "center", padding: "30px 0" }}>
-            <div className="section-title" style={{ fontSize: 44 }}>Nothing kicking off</div>
-            <div className="section-sub">Tournament runs {TOURNAMENT.fromDate} → {TOURNAMENT.toDate}</div>
-          </div>
-        </div>
-      )}
-
-      {alsoLive.length > 0 && (
-        <div className="card">
-          <div className="card-head"><h2>Also live</h2><span className="eyebrow">{alsoLive.length} more in play</span></div>
-          <div className="card-body tight">{alsoLive.map((m) => <MatchRow key={m.id} m={m} me={me} />)}</div>
-        </div>
-      )}
-
-      <div className="two-col">
-        <div className="card">
-          <div className="card-head"><h2>Up Next</h2><span className="eyebrow">soonest kickoffs</span></div>
-          <div className="card-body tight">
-            {upcoming.length ? upcoming.map((m) => <MatchRow key={m.id} m={m} me={me} />)
-              : <div className="empty">No scheduled fixtures</div>}
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="card-head"><h2>Live leaderboard</h2></div>
-          <div className="card-body tight">
-            <table className="leaderboard">
-              <tbody>
-                {standings.slice(0, 8).map((s, i) => (
-                  <tr key={s.participant.id} className={s.participant.id === me ? "me" : ""}>
-                    <td><span className={`rank-cell ${i === 0 ? "g" : i === 1 ? "s" : i === 2 ? "b" : ""}`}>{i + 1}</span></td>
-                    <td><div className="player-cell"><div className="nm">{s.participant.name}</div></div></td>
-                    <td>{s.liveMatches > 0 ? <span className="chip live">{s.liveMatches}</span> : null}</td>
-                    <td className={`pts-cell ${i === 0 ? "lead" : ""}`}>{s.points}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </>
-  )
-}
-
-/* ============================================================ FIXTURES */
-export function FixturesPage({ d }: { d: PageData }) {
-  const { matches, me, totals } = d
-  const byDate = (a: Match, b: Match) => (a.utcDate ?? "").localeCompare(b.utcDate ?? "")
-  const live = matches.filter(isLive).sort(byDate)
-  const upcoming = matches.filter(isUpcoming).sort(byDate)
-  const finished = matches.filter(isFinished).sort((a, b) => byDate(b, a))
-
-  return (
-    <>
-      <div className="statstrip">
-        <div className="stat"><div className="lbl">Played</div><div className="v">{totals.played}</div><div className="meta">of {TOTAL_MATCHES} total</div></div>
-        <div className="stat live"><div className="lbl">Live</div><div className="v">{totals.live}</div><div className="meta">in play now</div></div>
-        <div className="stat accent"><div className="lbl">Upcoming</div><div className="v">{totals.upcoming}</div><div className="meta">scheduled</div></div>
-        <div className="stat"><div className="lbl">Goals total</div><div className="v">{totals.goals}</div><div className="meta">in finished games</div></div>
-      </div>
-
-      {live.length > 0 && (
-        <div className="card">
-          <div className="card-head"><h2>Live now</h2><span className="eyebrow">{live.length} matches</span></div>
-          <div className="card-body tight">{live.map((m) => <MatchRow key={m.id} m={m} me={me} />)}</div>
-        </div>
-      )}
-
-      <div className="card">
-        <div className="card-head"><h2>Upcoming</h2><span className="eyebrow">next up</span></div>
-        <div className="card-body tight">
-          {upcoming.length ? upcoming.slice(0, 20).map((m) => <MatchRow key={m.id} m={m} me={me} />)
-            : <div className="empty">No upcoming fixtures</div>}
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-head"><h2>Recent results</h2><span className="eyebrow">finished</span></div>
-        <div className="card-body tight">
-          {finished.length ? finished.slice(0, 20).map((m) => <MatchRow key={m.id} m={m} me={me} />)
-            : <div className="empty">No results yet — tournament hasn't started</div>}
-        </div>
-      </div>
-    </>
-  )
-}
-
-/* ============================================================ BRACKET */
-const KO_STAGES = ["LAST_32", "LAST_16", "QUARTER_FINALS", "SEMI_FINALS", "FINAL"]
-export function BracketPage({ d }: { d: PageData }) {
-  const { matches, standings, koByParticipant } = d
-  const koMatches = matches.filter((m) => (STAGE_RANK[m.stage] ?? 0) > 0)
-  const aliveOwners = standings.filter((s) => koByParticipant[s.participant.id] > 0).length
-
-  const Tie = ({ m }: { m: Match }) => {
-    const hw = m.homeScore != null && m.awayScore != null && m.homeScore > m.awayScore
-    const aw = m.homeScore != null && m.awayScore != null && m.awayScore > m.homeScore
+function Countdown({ matches }: { matches: Match[] }) {
+  const now = Date.now()
+  const from = Date.parse(TOURNAMENT.fromDate)
+  const to = Date.parse(TOURNAMENT.toDate)
+  const DAY = 86_400_000
+  if (now < from) {
+    const days = Math.max(1, Math.ceil((from - now) / DAY))
     return (
-      <div className="br-tie">
-        <div className={`side ${hw ? "win" : ""}`}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 13 }}>{flagOf(m.homeTeam)}</span>
-            <div><div>{m.homeTeam}</div><div className="own">{ownerName(m.homeTeam) ?? "—"}</div></div>
-          </div>
-          <div className="sc">{m.homeScore ?? "–"}</div>
-        </div>
-        <div className={`side ${aw ? "win" : ""}`}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 13 }}>{flagOf(m.awayTeam)}</span>
-            <div><div>{m.awayTeam}</div><div className="own">{ownerName(m.awayTeam) ?? "—"}</div></div>
-          </div>
-          <div className="sc">{m.awayScore ?? "–"}</div>
-        </div>
-        {isLive(m) && <div className="br-foot" style={{ color: "var(--live)" }}>● live</div>}
-        {isUpcoming(m) && <div className="br-foot" style={{ color: "var(--text-3)" }}>{fmtKickoff(m.utcDate).day}</div>}
+      <div className="countdown">
+        <div className="lbl">World Cup 2026</div>
+        <div className="big">{days} day{days === 1 ? "" : "s"}</div>
+        <div className="lbl" style={{ marginTop: 4 }}>until kickoff</div>
       </div>
     )
   }
-
+  // furthest stage actually under way, by the real match stage code (so the
+  // third-place playoff reads "Third place", not "Semi-finals")
+  let topStage = "GROUP_STAGE"
+  for (const m of matches) {
+    if ((isLive(m) || isFinished(m)) && (STAGE_RANK[m.stage] ?? 0) > (STAGE_RANK[topStage] ?? 0)) {
+      topStage = m.stage
+    }
+  }
+  const day = Math.floor((now - from) / DAY) + 1
+  const days = Math.max(0, Math.ceil((to - now) / DAY))
   return (
-    <>
-      <div className="statstrip">
-        <div className="stat accent"><div className="lbl">Knockout matches</div><div className="v">{koMatches.length}</div><div className="meta">winners +{POINTS.nextRound} pts each round</div></div>
-        <div className="stat"><div className="lbl">Owners in KO</div><div className="v">{aliveOwners}<span className="unit">/ {PARTICIPANTS.length}</span></div><div className="meta">teams still alive</div></div>
-        <div className="stat"><div className="lbl">Teams in KO</div><div className="v">{d.teamRows.filter((t) => STAGE_RANK[t.stage] > 0).length}<span className="unit">/ 48</span></div><div className="meta">reached a knockout round</div></div>
-        <div className="stat live"><div className="lbl">Live ties</div><div className="v">{koMatches.filter(isLive).length}</div><div className="meta">in play</div></div>
-      </div>
-
-      <div className="card">
-        <div className="card-head">
-          <h2>Knockout Bracket</h2><span className="eyebrow">R32 → Final</span>
-          <div className="spacer" /><span className="chip lime">+{POINTS.nextRound} pts per round advanced</span>
-        </div>
-        <div className="card-body">
-          {koMatches.length === 0 ? (
-            <div className="empty">Bracket is set after the group stage — check back once R32 is drawn</div>
-          ) : (
-            <div className="bracket">
-              {KO_STAGES.map((stage) => {
-                const ties = koMatches.filter((m) => m.stage === stage)
-                return (
-                  <div className="br-col" key={stage}>
-                    <h4>{STAGE_LABEL[stage] ?? stage}</h4>
-                    {ties.length ? ties.map((m) => <Tie key={m.id} m={m} />)
-                      : <div className="br-tie empty-tie"><div className="side">TBD</div><div className="side">TBD</div></div>}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-    </>
+    <div className="countdown">
+      <div className="lbl">{STAGE_LABEL[topStage] ?? "Group stage"} · Day {day}</div>
+      <div className="big">{days} day{days === 1 ? "" : "s"}</div>
+      <div className="lbl" style={{ marginTop: 4 }}>until the final</div>
+    </div>
   )
 }
 
-/* ============================================================ PLAYERS */
-export function PlayersPage({ d, playerId }: { d: PageData; playerId?: string }) {
-  if (playerId && PARTICIPANTS.some((p) => p.id === playerId)) {
-    return <PlayerDetail d={d} id={playerId} />
+/* ── live ticker built from real results ──────────────────── */
+function Ticker({ matches }: { matches: Match[] }) {
+  const live = matches.filter(isLive).sort(byDate)
+  const recent = matches.filter(isFinished).sort((a, b) => byDate(b, a)).slice(0, 8)
+
+  const note = (m: Match): string => {
+    const ho = ownerName(m.homeTeam), ao = ownerName(m.awayTeam)
+    if (isLive(m)) return m.minute ?? "LIVE"
+    if (m.homeScore == null || m.awayScore == null) return "FT"
+    if (m.homeScore > m.awayScore) return ho ? `${ho} +${POINTS.win}` : "FT"
+    if (m.homeScore < m.awayScore) return ao ? `${ao} +${POINTS.win}` : "FT"
+    // draw: +1 per owned side
+    if (ho && ao) return ho === ao ? `${ho} +${POINTS.draw * 2}` : `${ho} & ${ao} share`
+    if (ho) return `${ho} +${POINTS.draw}`
+    if (ao) return `${ao} +${POINTS.draw}`
+    return "all square"
   }
 
-  const { standings, teamRows } = d
-  const teamStage = Object.fromEntries(teamRows.map((t) => [t.team, t]))
+  const items = [...live, ...recent]
+  if (items.length === 0) return null
+
+  const run = (prefix: string) => items.map((m) => (
+    <React.Fragment key={`${prefix}-${m.id}`}>
+      {flagOf(m.homeTeam)} {abbr(m.homeTeam)}{" "}
+      {m.homeScore != null || m.awayScore != null
+        ? `${m.homeScore ?? 0}–${m.awayScore ?? 0}`
+        : "v"}{" "}
+      {flagOf(m.awayTeam)} {abbr(m.awayTeam)} <b>· {note(m)}</b>
+      <span className="dot">◆</span>
+    </React.Fragment>
+  ))
+
+  return (
+    <div className="ticker">
+      <span className="tag">{live.length > 0 ? "LIVE" : "LATEST"}</span>
+      <div className="scroll"><span className="run">{run("a")}{run("b")}</span></div>
+    </div>
+  )
+}
+
+/* ════════ STANDINGS ════════ */
+export function StandingsPage({ d }: { d: PageData }) {
+  const { standings, matches, formByParticipant, mvByParticipant } = d
+  const podClass = ["gold", "teal", "coral"]
+  const word = ["First place 👑", "Runner-up", "Third"]
 
   return (
     <>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "end", flexWrap: "wrap", gap: 10 }}>
-        <div>
-          <h2 className="section-title">All Players</h2>
-          <div className="section-sub">{PARTICIPANTS.length} owners · 48 teams · tap a card for detail</div>
-        </div>
-        <span className="chip">SORT · POINTS</span>
+      <section className="hero">
+        <div><NextUp matches={matches} /></div>
+        <Countdown matches={matches} />
+      </section>
+
+      <Ticker matches={matches} />
+
+      <div className="section-head">
+        <h2>On the podium</h2>
+        <div className="spacer" />
+        <span className="eyebrow">Top 3 of {standings.length}</span>
+      </div>
+      <div className="podium">
+        {standings.slice(0, 3).map((s, i) => (
+          <div key={s.participant.id} className={`pod ${podClass[i]}`}>
+            <div className="rk-badge">{i + 1}</div>
+            <div className="rk-word">{word[i]}</div>
+            <div className="nm">{s.participant.name}</div>
+            <div className="flags">
+              {s.participant.teams.map((t) => <span key={t} className="f">{flagOf(t)}</span>)}
+            </div>
+            <div className="pts">{s.points}<span className="u">pts</span></div>
+            <div className="meta">GD {gdStr(s.gd)} · last 5 {formByParticipant[s.participant.id] || "—"}</div>
+          </div>
+        ))}
       </div>
 
-      <div className="player-grid">
+      <div className="section-head">
+        <h2>Full table</h2>
+        <div className="spacer" />
+        <span className="eyebrow">Tap a player · GD tie-break</span>
+      </div>
+      <div className="board">
+        <div className="head">
+          <span>#</span><span>Player</span><span>Teams</span><span>Form</span>
+          <span className="r">GD</span><span className="r">Pts</span>
+        </div>
         {standings.map((s, i) => {
           const p = s.participant
           return (
-            <a key={p.id} href={`#/players/${p.id}`} className="player-card link">
-              <div className="top">
-                <div className="av-lg">{initialsOf(p.name)}</div>
+            <a
+              key={p.id}
+              href={`#/players/${p.id}`}
+              className={`row ${i === 0 ? "leader" : ""}`}
+              aria-label={`Rank ${i + 1}, ${p.name}, ${s.points} points, goal difference ${gdStr(s.gd)}${s.liveMatches > 0 ? `, ${s.liveMatches} live` : ""}`}
+            >
+              <div className="rk">
+                <span className="pos">{i + 1}</span>
+                <MvTag mv={mvByParticipant[p.id] ?? 0} />
+              </div>
+              <div className="who">
+                <div className="ava" style={{ background: colorOf(p.id) }}>
+                  {initialsOf(p.name)}
+                  {s.liveMatches > 0 && <span className="livedot" />}
+                </div>
                 <div>
                   <div className="nm">{p.name}</div>
-                  <div className="teamcount">{p.teams.length} TEAMS</div>
+                  <div className="sub">{s.won}W {s.drawn}D {s.lost}L · {p.teams.length} teams</div>
                 </div>
-                <div className="rk">#{i + 1}</div>
               </div>
-              <div className="pts-big">{s.points}<span className="unit">PTS</span></div>
-              <div className="meta">{s.won}W · {s.drawn}D · {s.lost}L · GD {gdStr(s.gd)}</div>
-              <div className="teams-row">
-                {p.teams.map((t) => {
-                  const tr = teamStage[t]
-                  return (
-                    <span key={t} className="team-chip">
-                      <span className="flag">{flagOf(t)}</span>{t}
-                      {tr?.live && <span style={{ color: "var(--live)", fontSize: 10 }}>●</span>}
-                    </span>
-                  )
-                })}
+              <div className="flagcluster">
+                {p.teams.map((t) => <span key={t} className="f">{flagOf(t)}</span>)}
               </div>
-              <div className="view-link">View teams & fixtures →</div>
+              <FormPips form={formByParticipant[p.id] ?? ""} />
+              <div className={`gd num ${s.gd > 0 ? "pos" : s.gd < 0 ? "neg" : ""}`}>{gdStr(s.gd)}</div>
+              <div className="pts-cell num">{s.points}</div>
             </a>
           )
         })}
       </div>
+      <div className="footnote">
+        <span className="chip">WIN +{POINTS.win}</span>
+        <span className="chip">DRAW +{POINTS.draw}</span>
+        <span className="chip">KO ROUND +{POINTS.nextRound}</span>
+        Draw a team that goes out early? You keep the points. No swaps, no refunds.
+      </div>
     </>
   )
 }
 
-/* ── single player: their teams individually + their fixtures ── */
-function PlayerDetail({ d, id }: { d: PageData; id: string }) {
-  const { standings, teamRows, matches, me, formByParticipant, koByParticipant } = d
-  const idx = standings.findIndex((s) => s.participant.id === id)
-  const s = standings[idx]
-  const p = s.participant
-  const rows = p.teams.map((t) => teamRows.find((r) => r.team === t)!).filter(Boolean)
-  const teamSet = new Set(p.teams)
-  const theirs = matches.filter((m) => teamSet.has(m.homeTeam) || teamSet.has(m.awayTeam))
-  const byDate = (a: Match, b: Match) => (a.utcDate ?? "").localeCompare(b.utcDate ?? "")
-  const live = theirs.filter(isLive).sort(byDate)
-  const upcoming = theirs.filter(isUpcoming).sort(byDate)
-  const results = theirs.filter(isFinished).sort((a, b) => byDate(b, a))
+/* ════════ MATCH DAY ════════ */
+function MatchCard({ m }: { m: Match }) {
+  const live = isLive(m)
+  const fin = isFinished(m)
+  const k = fmtKickoff(m.utcDate)
+  const ko = (STAGE_RANK[m.stage] ?? 0) > 0
+  const showScore = (live || fin) && (m.homeScore != null || m.awayScore != null)
+
+  const stat = live ? (
+    <span className="stat live"><span className="pip" />{m.minute ?? "LIVE"}</span>
+  ) : fin ? (
+    <span className="stat ft">FULL TIME</span>
+  ) : (
+    <span className="stat soon">{k.time}</span>
+  )
+
+  const Side = ({ team, score, other }: { team: string; score: number | null; other: number | null }) => {
+    const dim = showScore && (score ?? 0) < (other ?? 0)
+    return (
+      <div className={`side ${dim ? "dim" : ""}`}>
+        <span className="fl">{flagOf(team)}</span>
+        <div>
+          <span className="tn">{team}</span>
+          <OwnerLine team={team} />
+        </div>
+        <span className="sc">{showScore ? score ?? 0 : ""}</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className={`match ${live ? "islive" : ""}`}>
+      <div className="mh"><span className="when">{k.day}{ko ? ` · ${STAGE_SHORT[m.stage] ?? m.stage}` : ""}</span>{stat}</div>
+      <Side team={m.homeTeam} score={m.homeScore} other={m.awayScore} />
+      {!showScore && <div className="vs">vs</div>}
+      <Side team={m.awayTeam} score={m.awayScore} other={m.homeScore} />
+    </div>
+  )
+}
+
+export function MatchDayPage({ d }: { d: PageData }) {
+  const { matches } = d
+  const live = matches.filter(isLive).sort(byDate)
+  const finished = matches.filter(isFinished).sort((a, b) => byDate(b, a))
+  const upcoming = matches.filter(isUpcoming).sort(byDate)
 
   return (
     <>
-      <a href="#/players" className="chip" style={{ alignSelf: "flex-start" }}>← All players</a>
-
-      <div className="card">
-        <div className="card-body" style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
-          <div className="av-lg" style={{ width: 56, height: 56, fontSize: 20 }}>{initialsOf(p.name)}</div>
-          <div style={{ flex: 1, minWidth: 160 }}>
-            <div style={{ fontFamily: "var(--font-display)", fontSize: 34, textTransform: "uppercase", letterSpacing: "0.03em", lineHeight: 1 }}>{p.name}</div>
-            <div className="section-sub" style={{ marginTop: 6 }}>
-              rank #{idx + 1} · {p.teams.length} teams · {koByParticipant[id]} in KO
-            </div>
-            <div style={{ marginTop: 10 }}><Wdl form={formByParticipant[id] ?? ""} /></div>
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontFamily: "var(--font-display)", fontSize: 56, color: "var(--lime)", lineHeight: 1 }}>{s.points}<span style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--text-3)", marginLeft: 8 }}>PTS</span></div>
-            <div className="meta" style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-3)", letterSpacing: "0.14em", textTransform: "uppercase", marginTop: 6 }}>{s.won}W · {s.drawn}D · {s.lost}L · GD {gdStr(s.gd)} · GF {s.gf}</div>
-          </div>
-        </div>
-      </div>
-
-      <div>
-        <div className="section-sub" style={{ marginBottom: 14 }}>Their teams</div>
-        <div className="team-grid">
-          {rows.map((t) => <TeamCardView key={t.team} t={t} me={me} />)}
-        </div>
+      <div className="section-head">
+        <h2>Match Day</h2>
+        <div className="spacer" />
+        <span className="eyebrow">{live.length} live · {finished.length} done · {upcoming.length} to come</span>
       </div>
 
       {live.length > 0 && (
-        <div className="card">
-          <div className="card-head"><h2>Live now</h2><span className="eyebrow">{live.length} in play</span></div>
-          <div className="card-body tight">{live.map((m) => <MatchRow key={m.id} m={m} me={me} />)}</div>
+        <>
+          <div className="dayhdr" style={{ marginTop: 6 }}>🔴 Live now</div>
+          <div className="match-grid">{live.map((m) => <MatchCard key={m.id} m={m} />)}</div>
+        </>
+      )}
+
+      <div className="section-head mt"><h2>Results</h2></div>
+      {finished.length === 0 && <div className="empty">No results yet — tournament runs {TOURNAMENT.fromDate} → {TOURNAMENT.toDate}</div>}
+      {groupByDay(finished).map(({ day, ms }) => (
+        <React.Fragment key={day}>
+          <div className="dayhdr">{day}</div>
+          <div className="match-grid">{ms.map((m) => <MatchCard key={m.id} m={m} />)}</div>
+        </React.Fragment>
+      ))}
+
+      <div className="section-head mt"><h2>Coming up</h2></div>
+      {upcoming.length === 0 && <div className="empty">No scheduled fixtures</div>}
+      {groupByDay(upcoming).map(({ day, ms }) => (
+        <React.Fragment key={day}>
+          <div className="dayhdr">{day}</div>
+          <div className="match-grid">{ms.map((m) => <MatchCard key={m.id} m={m} />)}</div>
+        </React.Fragment>
+      ))}
+    </>
+  )
+}
+
+/* ════════ BRACKET ════════ */
+const KO_ORDER = ["LAST_32", "LAST_16", "QUARTER_FINALS", "SEMI_FINALS", "FINAL"]
+
+function Tie({ m, final }: { m: Match; final?: boolean }) {
+  const fin = isFinished(m)
+  const hw = fin && m.homeScore != null && m.awayScore != null && m.homeScore > m.awayScore
+  const aw = fin && m.homeScore != null && m.awayScore != null && m.awayScore > m.homeScore
+  const T = ({ team, win, score }: { team: string; win: boolean; score: number | null }) => (
+    <div className={`t ${win ? "win" : ""}`}>
+      <span className="fl">{flagOf(team)}</span>
+      <span className="tn">{team}</span>
+      <span className="sc num">{score ?? "–"}</span>
+      <span className="od" style={{ background: ownerId(team) ? colorOf(ownerId(team)) : "transparent" }} />
+    </div>
+  )
+  return (
+    <div className={`tie ${final ? "final" : ""} ${isLive(m) ? "islive" : ""}`} title={fmtKickoff(m.utcDate).day}>
+      <T team={m.homeTeam} win={hw} score={m.homeScore} />
+      <T team={m.awayTeam} win={aw} score={m.awayScore} />
+    </div>
+  )
+}
+
+export function BracketPage({ d }: { d: PageData }) {
+  const { matches } = d
+  const ko = matches.filter((m) => (STAGE_RANK[m.stage] ?? 0) > 0)
+  const final = ko.find((m) => m.stage === "FINAL")
+  const third = ko.find((m) => m.stage === "THIRD_PLACE")
+  const champ = final && isFinished(final) && final.homeScore != null && final.awayScore != null
+    && final.homeScore !== final.awayScore
+    ? (final.homeScore > final.awayScore ? final.homeTeam : final.awayTeam)
+    : null
+
+  return (
+    <>
+      <div className="section-head">
+        <h2>The Bracket</h2>
+        <div className="spacer" />
+        <span className="eyebrow">+{POINTS.nextRound} per round reached</span>
+      </div>
+
+      {ko.length === 0 ? (
+        <div className="empty">
+          Bracket locks in once the group stage wraps — check back when the Round of 32 is drawn.
+        </div>
+      ) : (
+        <div className="bracket">
+          {KO_ORDER.map((stage) => {
+            const ties = ko.filter((m) => m.stage === stage).sort(byDate)
+            return (
+              <div className="bcol" key={stage}>
+                <div className="bcol-h">{STAGE_LABEL[stage]}</div>
+                <div className="bcol-body">
+                  {stage === "FINAL" ? (
+                    <>
+                      {final && <Tie m={final} final />}
+                      {champ && (
+                        <div className="champ">
+                          <div className="lbl">World champions</div>
+                          <div className="fl">{flagOf(champ)}</div>
+                          <div className="tn">{champ}</div>
+                          <div className="lbl" style={{ marginTop: 6 }}>{ownerName(champ) ?? "—"} cashes in 🏆</div>
+                        </div>
+                      )}
+                      {third && (
+                        <>
+                          <div className="bcol-h" style={{ marginTop: 10 }}>Third place</div>
+                          <Tie m={third} />
+                        </>
+                      )}
+                      {!final && <div className="tie"><div className="t"><span className="fl" /><span className="tn">TBD</span></div><div className="t"><span className="fl" /><span className="tn">TBD</span></div></div>}
+                    </>
+                  ) : ties.length ? (
+                    ties.map((m) => <Tie key={m.id} m={m} />)
+                  ) : (
+                    <div className="tie"><div className="t"><span className="fl" /><span className="tn">TBD</span></div><div className="t"><span className="fl" /><span className="tn">TBD</span></div></div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
 
-      <div className="card">
-        <div className="card-head"><h2>Upcoming matches</h2><span className="eyebrow">{p.name}'s teams</span></div>
-        <div className="card-body tight">
-          {upcoming.length ? upcoming.slice(0, 12).map((m) => <MatchRow key={m.id} m={m} me={me} />)
-            : <div className="empty">No upcoming fixtures</div>}
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-head"><h2>Results</h2><span className="eyebrow">finished</span></div>
-        <div className="card-body tight">
-          {results.length ? results.slice(0, 12).map((m) => <MatchRow key={m.id} m={m} me={me} />)
-            : <div className="empty">No results yet</div>}
-        </div>
+      <div className="footnote bracket-note">
+        <span className="chip">R32 → FINAL</span>
+        Reaching each round is <b>+{POINTS.nextRound}</b> for the owner — the bracket is where the
+        table can flip. Coloured dots show who owns each nation.
       </div>
     </>
   )
 }
 
-/* ============================================================ TEAM CARD */
-function TeamCardView({ t, me }: { t: TeamRow; me: string }) {
-  const stageChip = STAGE_RANK[t.stage] > 0
-    ? <span className="chip lime">{STAGE_SHORT[t.stage]}</span>
-    : <span className="chip">GROUP</span>
+/* ════════ PLAYERS ════════ */
+function MiniPips({ form }: { form: string[] }) {
   return (
-    <div className="team-card">
-      <div className="top">
-        <div className="flag-md">{flagOf(t.team)}</div>
-        <div style={{ flex: 1 }}>
-          <div className="nm">{t.team}</div>
-          <div className="own">↳ {t.owner}{ownerId(t.team) === me && <span style={{ color: "var(--lime)" }}> (YOU)</span>}</div>
-        </div>
-        {stageChip}
+    <span className="mini">
+      {form.slice(-5).map((c, i) =>
+        c === "live"
+          ? <span key={i} className="live">●</span>
+          : <span key={i} className={c === "W" ? "w" : c === "D" ? "d" : "l"}>{c}</span>
+      )}
+    </span>
+  )
+}
+
+function PlayerCardTop({ s, rank }: { s: Standing; rank: number }) {
+  const p = s.participant
+  return (
+    <div className="top" style={{ background: colorOf(p.id) }}>
+      <div className="ava">{initialsOf(p.name)}</div>
+      <div>
+        <div className="nm">{p.name}</div>
+        <div className="sub">RANK #{rank} · {s.won}W {s.drawn}D {s.lost}L · GD {gdStr(s.gd)}</div>
       </div>
-      <div className="form">
-        {t.form.length ? t.form.slice(-5).map((c, i) =>
-          c === "live" ? <span key={i} className="live">●</span>
-            : <span key={i} className={c === "W" ? "w" : c === "D" ? "d" : "l"}>{c}</span>)
-          : [0, 1, 2].map((i) => <span key={i} className="none">·</span>)}
-      </div>
-      <div className="pts-row">
-        <div><div className="v">{t.points}</div><div className="lbl">Points contributed</div></div>
-        <div className="right">{t.played}P · {t.won}W {t.drawn}D {t.lost}L</div>
-      </div>
+      <div className="big"><div className="n">{s.points}</div><div className="u">POINTS</div></div>
     </div>
   )
 }
 
-/* ============================================================ TEAMS */
+function PlayerTeamRows({ s, rowByTeam }: { s: Standing; rowByTeam: Map<string, TeamRow> }) {
+  return (
+    <div className="body">
+      {s.teams.map((t) => {
+        const row = rowByTeam.get(t.team)
+        return (
+          <div className="teamrow" key={t.team}>
+            <span className="fl">{flagOf(t.team)}</span>
+            <span className="tn">{t.team}</span>
+            <MiniPips form={row?.form ?? []} />
+            <span className={`tp ${row?.live ? "live" : ""}`}>{t.points} pt{t.points === 1 ? "" : "s"}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+export function PlayersPage({ d, playerId }: { d: PageData; playerId?: string }) {
+  if (playerId && PARTICIPANTS.some((p) => p.id === playerId)) {
+    return <PlayerDetail d={d} id={playerId} />
+  }
+  const { standings, teamRows } = d
+  const rowByTeam = new Map(teamRows.map((r) => [r.team, r]))
+  return (
+    <>
+      <div className="section-head">
+        <h2>The Players</h2>
+        <div className="spacer" />
+        <span className="eyebrow">{PARTICIPANTS.length} owners · 48 nations</span>
+      </div>
+      <div className="pairs-grid">
+        {standings.map((s, i) => (
+          <a key={s.participant.id} href={`#/players/${s.participant.id}`} className="pcard link">
+            <PlayerCardTop s={s} rank={i + 1} />
+            <PlayerTeamRows s={s} rowByTeam={rowByTeam} />
+          </a>
+        ))}
+      </div>
+    </>
+  )
+}
+
+function PlayerDetail({ d, id }: { d: PageData; id: string }) {
+  const { standings, teamRows, matches } = d
+  const idx = standings.findIndex((s) => s.participant.id === id)
+  const s = standings[idx]
+  const rowByTeam = new Map(teamRows.map((r) => [r.team, r]))
+  const teamSet = new Set(s.participant.teams)
+  const theirs = matches.filter((m) => teamSet.has(m.homeTeam) || teamSet.has(m.awayTeam))
+  const live = theirs.filter(isLive).sort(byDate)
+  const upcoming = theirs.filter(isUpcoming).sort(byDate).slice(0, 12)
+  const results = theirs.filter(isFinished).sort((a, b) => byDate(b, a)).slice(0, 12)
+
+  return (
+    <>
+      <div style={{ marginBottom: 16 }}>
+        <a href="#/players" className="chip">← All players</a>
+      </div>
+
+      <div className="pcard" style={{ marginBottom: 30 }}>
+        <PlayerCardTop s={s} rank={idx + 1} />
+        <PlayerTeamRows s={s} rowByTeam={rowByTeam} />
+      </div>
+
+      {live.length > 0 && (
+        <>
+          <div className="dayhdr">🔴 Live now</div>
+          <div className="match-grid">{live.map((m) => <MatchCard key={m.id} m={m} />)}</div>
+        </>
+      )}
+
+      <div className="section-head mt"><h2>Coming up</h2><div className="spacer" /><span className="eyebrow">{s.participant.name}'s teams</span></div>
+      {upcoming.length
+        ? <div className="match-grid">{upcoming.map((m) => <MatchCard key={m.id} m={m} />)}</div>
+        : <div className="empty">No upcoming fixtures</div>}
+
+      <div className="section-head mt"><h2>Results</h2></div>
+      {results.length
+        ? <div className="match-grid">{results.map((m) => <MatchCard key={m.id} m={m} />)}</div>
+        : <div className="empty">No results yet</div>}
+    </>
+  )
+}
+
+/* ════════ TEAMS ════════ */
 export function TeamsPage({ d }: { d: PageData }) {
-  const { teamRows, me, totals } = d
+  const { teamRows, standings } = d
   const [owner, setOwner] = useState<string>("all")
-  const stageSortKey = (t: TeamRow) => (t.live ? 0 : STAGE_RANK[t.stage] > 0 ? 1 : 2)
-  const sorted = [...teamRows].sort((a, b) => stageSortKey(a) - stageSortKey(b) || b.points - a.points || a.team.localeCompare(b.team))
+  // points from the scoring engine (same source as Standings/Players) so a
+  // team can't show a different total across tabs
+  const ptsByTeam = new Map<string, number>()
+  for (const s of standings) for (const t of s.teams) ptsByTeam.set(t.team, t.points)
+  const ptsOf = (team: string) => ptsByTeam.get(team) ?? 0
+  const sorted = [...teamRows].sort((a, b) => ptsOf(b.team) - ptsOf(a.team) || a.team.localeCompare(b.team))
   const rows = owner === "all" ? sorted : sorted.filter((t) => ownerId(t.team) === owner)
-  const inKo = teamRows.filter((t) => STAGE_RANK[t.stage] > 0).length
-  const liveTeams = teamRows.filter((t) => t.live).length
 
   return (
     <>
-      <div className="statstrip">
-        <div className="stat"><div className="lbl">Total teams</div><div className="v">48</div><div className="meta">across {PARTICIPANTS.length} owners</div></div>
-        <div className="stat accent"><div className="lbl">In knockouts</div><div className="v">{inKo}</div><div className="meta">reached a KO round</div></div>
-        <div className="stat live"><div className="lbl">Live now</div><div className="v">{liveTeams}</div><div className="meta">{totals.live} matches</div></div>
-        <div className="stat"><div className="lbl">Played</div><div className="v">{teamRows.filter((t) => t.played > 0).length}</div><div className="meta">teams with games</div></div>
+      <div className="section-head">
+        <h2>The Teams</h2>
+        <div className="spacer" />
+        <span className="eyebrow">48 nations · points contributed</span>
       </div>
-
-      <div className="card">
-        <div className="card-head">
-          <h2>{owner === "all" ? "All 48 Teams" : `${TEAM_OWNER_NAME_BY_ID[owner]}'s Teams`}</h2>
-          <span className="eyebrow">{rows.length} shown · live first</span>
-        </div>
-        <div className="filter-row">
-          <button className={`chip ${owner === "all" ? "lime" : ""}`} onClick={() => setOwner("all")}>All owners</button>
-          {PARTICIPANTS.map((p) => (
-            <button key={p.id} className={`chip ${owner === p.id ? "lime" : ""}`} onClick={() => setOwner(p.id)}>
-              {p.name}
-            </button>
-          ))}
-        </div>
-        <div className="card-body">
-          <div className="team-grid">
-            {rows.map((t) => <TeamCardView key={t.team} t={t} me={me} />)}
+      <div className="filterbar">
+        <button className={`fbtn ${owner === "all" ? "active" : ""}`} onClick={() => setOwner("all")}>
+          All 48
+        </button>
+        {PARTICIPANTS.map((p) => (
+          <button
+            key={p.id}
+            className={`fbtn ${owner === p.id ? "active" : ""}`}
+            onClick={() => setOwner(p.id)}
+          >
+            <span className="dotc" style={{ background: colorOf(p.id) }} />{p.name}
+          </button>
+        ))}
+      </div>
+      <div className="teams-grid">
+        {rows.map((t) => (
+          <div className="tcard" key={t.team}>
+            <span className="stripe" style={{ background: colorOf(ownerId(t.team)) }} />
+            {t.live && <span className="livedot" />}
+            <span className="fl">{flagOf(t.team)}</span>
+            <div className="info">
+              <div className="tn">{t.team}</div>
+              <div className="ow">{STAGE_SHORT[t.stage] ?? t.stage} · {t.owner}</div>
+            </div>
+            <div className="pp">{ptsOf(t.team)}<small>PTS</small></div>
           </div>
-        </div>
+        ))}
       </div>
     </>
   )
 }
 
-/* ============================================================ STATS */
+/* ════════ STATS ════════ */
 export function StatsPage({ d }: { d: PageData }) {
-  const { teamRows, totals } = d
-  const mvp = [...teamRows].filter((t) => t.points > 0).sort((a, b) => b.points - a.points).slice(0, 6)
-  const started = totals.played > 0
+  const { standings, totals, mvByParticipant } = d
+  const leader = standings[0]
+  const last = standings[standings.length - 1]
+  const mover = [...standings].sort(
+    (a, b) => (mvByParticipant[b.participant.id] ?? 0) - (mvByParticipant[a.participant.id] ?? 0)
+  )[0]
+  const moverMv = mover ? mvByParticipant[mover.participant.id] ?? 0 : 0
+  const topTeam = standings.flatMap((s) => s.teams).sort((a, b) => b.points - a.points)[0]
+  const maxPts = Math.max(1, leader?.points ?? 0)
 
   return (
     <>
-      <div>
-        <h2 className="section-title">The Numbers</h2>
-        <div className="section-sub">live records · refreshed every 60s</div>
+      <div className="section-head">
+        <h2>The Stats</h2>
+        <div className="spacer" />
+        <span className="eyebrow">For the group chat</span>
       </div>
-
-      <div className="two-col">
-        <div className="card">
-          <div className="card-head"><h2>Golden Boot Race</h2><span className="eyebrow">player goals</span></div>
-          <div className="card-body">
-            <div className="empty">
-              {started ? "Per-player goal data not in the feed yet" : "No goals yet — tournament starts " + TOURNAMENT.fromDate}
+      <div className="stat-grid">
+        <div className="scard gold">
+          <span className="em">👑</span>
+          <div className="k">Top of the pile</div>
+          <div className="v">{leader?.participant.name ?? "—"}</div>
+          <div className="d">{leader?.points ?? 0} pts · {leader?.won ?? 0} wins · GD {gdStr(leader?.gd ?? 0)}</div>
+        </div>
+        <div className="scard teal">
+          <span className="em">📈</span>
+          <div className="k">Biggest climber</div>
+          <div className="v">{moverMv > 0 ? mover.participant.name : "—"}</div>
+          <div className="d">{moverMv > 0 ? `Up ${moverMv} place${moverMv === 1 ? "" : "s"} today` : "No risers yet today"}</div>
+        </div>
+        <div className="scard coral">
+          <span className="em">🥶</span>
+          <div className="k">Rock bottom</div>
+          <div className="v">{last?.participant.name ?? "—"}</div>
+          <div className="d">{last?.points ?? 0} pts — propping up the table</div>
+        </div>
+        <div className="scard ink">
+          <span className="em">{topTeam && topTeam.points > 0 ? flagOf(topTeam.team) : "⚽"}</span>
+          <div className="k">Best pick so far</div>
+          <div className="v">{topTeam && topTeam.points > 0 ? topTeam.team : "—"}</div>
+          <div className="d">{topTeam && topTeam.points > 0 ? `${topTeam.points} pts for ${ownerName(topTeam.team)}` : "No points banked yet"}</div>
+        </div>
+        <div className="scard cream">
+          <span className="em">⚽</span>
+          <div className="k">Goals so far</div>
+          <div className="v">{totals.goals}</div>
+          <div className="d">across {totals.finished} finished games</div>
+        </div>
+        <div className="scard cream">
+          <span className="em">📅</span>
+          <div className="k">Matches played</div>
+          <div className="v">{totals.played}<span style={{ fontSize: 20 }}> / {TOTAL_MATCHES}</span></div>
+          <div className="d">{totals.upcoming} still to come</div>
+        </div>
+      </div>
+      <div className="section-head"><h2>Points by player</h2></div>
+      <div className="barlist">
+        {standings.map((s) => (
+          <div className="barrow" key={s.participant.id}>
+            <span className="bn">{s.participant.name}</span>
+            <div className="bartrack">
+              <div
+                className="barfill"
+                style={{
+                  width: `${Math.round((s.points / maxPts) * 100)}%`,
+                  background: colorOf(s.participant.id),
+                }}
+              />
             </div>
+            <span className="bv">{s.points}</span>
           </div>
-        </div>
-        <div className="card">
-          <div className="card-head"><h2>Movers · last 24h</h2></div>
-          <div className="card-body"><div className="empty">{started ? "No ranking changes yet" : "Standings static until kickoff"}</div></div>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-head"><h2>MVP Teams</h2><span className="eyebrow">most points contributed by a single team</span></div>
-        <div className="card-body mvp-grid">
-          {mvp.length ? mvp.map((t) => (
-            <div key={t.team} style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 10, padding: 16, display: "flex", alignItems: "center", gap: 14 }}>
-              <div style={{ fontFamily: "var(--font-display)", fontSize: 44, color: "var(--lime)", lineHeight: 1 }}>{t.points}</div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontFamily: "var(--font-display)", fontSize: 20, letterSpacing: "0.03em", textTransform: "uppercase" }}>{t.team}</div>
-                <div style={{ fontSize: 11.5, color: "var(--text-3)", fontFamily: "var(--font-mono)", letterSpacing: "0.06em", textTransform: "uppercase", marginTop: 2 }}>↳ {t.owner}</div>
-              </div>
-            </div>
-          )) : <div className="empty" style={{ gridColumn: "1 / -1" }}>No points scored yet</div>}
-        </div>
+        ))}
       </div>
     </>
   )
 }
 
-/* ============================================================ RULES */
+/* ════════ RULES ════════ */
 export function RulesPage(_: { d: PageData }) {
   return (
-    <div className="rules-grid">
-      <div>
-        <h2 className="section-title">How the Sweepstake Works</h2>
-        <div className="section-sub">scoring · tie-breaks · the boring stuff</div>
-        <div className="prose">
-          <p style={{ fontSize: 17, marginTop: 24 }}>
-            {PARTICIPANTS.length} of us drew 4–6 national teams each from a hat. Every match those
-            teams play scores points. The leaderboard is live for the whole tournament —
-            <code>{TOURNAMENT.fromDate}</code> to <code>{TOURNAMENT.toDate}</code>. Most points at the end wins.
-          </p>
+    <>
+      <div className="section-head">
+        <h2>How it works</h2>
+        <div className="spacer" />
+        <span className="eyebrow">The sweepstake rules</span>
+      </div>
+      <div className="rules-grid">
+        <div className="rule-card">
           <h3>Scoring</h3>
-          <table className="points-table">
-            <thead><tr><th>Event</th><th style={{ textAlign: "right" }}>Points</th></tr></thead>
-            <tbody>
-              <tr><td>Win</td><td className="v" style={{ textAlign: "right" }}>{POINTS.win}</td></tr>
-              <tr><td>Draw</td><td className="v" style={{ textAlign: "right" }}>{POINTS.draw}</td></tr>
-              <tr><td>Loss</td><td className="v" style={{ textAlign: "right", color: "var(--text-3)" }}>{POINTS.loss}</td></tr>
-              <tr><td>Reaching a knockout round (R32, R16, QF, SF, Final)</td><td className="v" style={{ textAlign: "right" }}>+{POINTS.nextRound} each</td></tr>
-            </tbody>
-          </table>
-          <h3>Tie-breaks</h3>
-          <ul>
-            <li>Goal difference (GF − GA) across all your teams</li>
-            <li>Then goals for</li>
-            <li>Then alphabetical on name</li>
-          </ul>
-          <h3>Live data</h3>
-          <p>Scores come from <code>football-data.org</code>. A scheduled job refreshes results every ~10 minutes during match days and the dashboard re-polls every 60 seconds — no manual updates.</p>
-          <h3>No swaps</h3>
-          <p>Group stage gives 3 matches per team. Draw a team that goes out early and you still bank whatever points they earned. No refunds, no swaps.</p>
-        </div>
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        <div className="card">
-          <div className="card-head"><h2>Quick maths</h2></div>
-          <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div>
-              <div className="section-sub">Group stage max</div>
-              <div style={{ fontFamily: "var(--font-display)", fontSize: 36, color: "var(--lime)" }}>9 pts</div>
-              <div style={{ color: "var(--text-2)", fontSize: 13 }}>3 wins per team</div>
-            </div>
-            <div>
-              <div className="section-sub">If a team reaches the Final</div>
-              <div style={{ fontFamily: "var(--font-display)", fontSize: 36, color: "var(--lime)" }}>+20 pts</div>
-              <div style={{ color: "var(--text-2)", fontSize: 13 }}>R32 + R16 + QF + SF + Final = 5 × {POINTS.nextRound}</div>
-            </div>
+          <div className="score-line">
+            <div className="ic" style={{ background: "rgba(7,160,133,.14)" }}>✅</div>
+            <div className="lab">Win<small>any of your teams wins a match</small></div>
+            <div className="pl pos">+{POINTS.win}</div>
+          </div>
+          <div className="score-line">
+            <div className="ic" style={{ background: "rgba(255,176,46,.18)" }}>🤝</div>
+            <div className="lab">Draw<small>a point for a stalemate</small></div>
+            <div className="pl pos">+{POINTS.draw}</div>
+          </div>
+          <div className="score-line">
+            <div className="ic" style={{ background: "rgba(46,91,255,.12)" }}>🚀</div>
+            <div className="lab">Reach a knockout round<small>R32, R16, QF, SF, Final — each step</small></div>
+            <div className="pl pos">+{POINTS.nextRound}</div>
           </div>
         </div>
-        <div className="card">
-          <div className="card-head"><h2>The pot</h2></div>
-          <div className="card-body" style={{ textAlign: "center", padding: 24 }}>
-            <div style={{ fontFamily: "var(--font-display)", fontSize: 56, color: "var(--lime)", lineHeight: 1 }}>£—</div>
-            <div className="section-sub" style={{ marginTop: 6 }}>set buy-in in admin</div>
-            <hr style={{ border: "none", borderTop: "1px solid var(--border-soft)", margin: "18px 0" }} />
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, textAlign: "left" }}>
-              <div><div className="section-sub">1ST</div><div style={{ fontFamily: "var(--font-display)", fontSize: 22, color: "var(--gold)" }}>£—</div></div>
-              <div><div className="section-sub">2ND</div><div style={{ fontFamily: "var(--font-display)", fontSize: 22, color: "var(--silver)" }}>£—</div></div>
-              <div><div className="section-sub">3RD</div><div style={{ fontFamily: "var(--font-display)", fontSize: 22, color: "var(--bronze)" }}>£—</div></div>
-            </div>
+        <div>
+          <div className="rule-card">
+            <h3>Tie-breaks</h3>
+            <div className="tiebreak"><span className="n">1</span><div><b>Goal difference</b> across all your teams</div></div>
+            <div className="tiebreak"><span className="n">2</span><div><b>Goals scored</b> — attack wins the day</div></div>
+            <div className="tiebreak"><span className="n">3</span><div><b>Alphabetical</b> on name. Brutal but simple.</div></div>
           </div>
         </div>
       </div>
-    </div>
+      <div className="footnote" style={{ marginTop: 24 }}>
+        <span className="chip">{PARTICIPANTS.length} players</span>
+        <span className="chip">48 nations</span>
+        <span className="chip">4–6 each</span>
+        Drafted from a hat. Draw a team that flops? You keep their points. No swaps, no refunds, no mercy.
+      </div>
+    </>
   )
 }
 
-/* ============================================================ ADMIN */
+/* ════════ ADMIN ════════ */
 export function AdminPage({ d }: { d: PageData }) {
   const { updatedAt, reload, totals, matches } = d
   const lastSync = updatedAt ? new Date(updatedAt).toLocaleString() : "never"
@@ -718,54 +771,52 @@ export function AdminPage({ d }: { d: PageData }) {
 
   return (
     <>
-      <div>
-        <h2 className="section-title">Admin</h2>
-        <div className="section-sub">draft · data · sync</div>
+      <div className="section-head">
+        <h2>Admin</h2>
+        <div className="spacer" />
+        <span className="eyebrow">Draft · data · sync</span>
       </div>
-
-      <div className="statstrip">
-        <div className="stat accent"><div className="lbl">Last sync</div><div className="v" style={{ fontSize: 26 }}>{lastSync === "never" ? "never" : lastSync.split(",")[1] ?? lastSync}</div><div className="meta">auto every ~10 min on match days</div></div>
-        <div className="stat"><div className="lbl">Matches loaded</div><div className="v">{matches.length}</div><div className="meta">{totals.played} played · {totals.upcoming} upcoming</div></div>
-        <div className="stat"><div className="lbl">Source</div><div className="v" style={{ fontSize: 18, fontFamily: "var(--font-mono)" }}>football-data</div><div className="meta">competition WC · season 2026</div></div>
-        <div className="stat"><div className="lbl">Live</div><div className="v" style={{ color: "var(--win)" }}>{totals.live}</div><div className="meta">matches in play</div></div>
-      </div>
-
-      <div className="two-col">
-        <div className="card">
-          <div className="card-head"><h2>Draft</h2><span className="eyebrow">{PARTICIPANTS.length} owners · 48 teams</span></div>
-          <div className="card-body tight">
-            {PARTICIPANTS.map((p) => (
-              <div key={p.id} className="draft-row">
-                <div className="av" style={{ width: 32, height: 32 }}>{initialsOf(p.name)}</div>
-                <div style={{ fontWeight: 600 }}>{p.name}</div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {p.teams.map((t) => (
-                    <span key={t} className="team-chip"><span className="flag">{flagOf(t)}</span>{t}</span>
-                  ))}
-                </div>
+      <div className="admin-grid">
+        <div className="rule-card">
+          <h3>The draft</h3>
+          {PARTICIPANTS.map((p) => (
+            <div className="draft-row" key={p.id}>
+              <div className="ava" style={{ background: colorOf(p.id) }}>{initialsOf(p.name)}</div>
+              <div className="nm">{p.name}</div>
+              <div className="chips">
+                {p.teams.map((t) => <span key={t} className="chip">{flagOf(t)} {t}</span>)}
               </div>
-            ))}
-            <div style={{ padding: "12px 20px", fontSize: 12, color: "var(--text-3)" }}>
-              Edit the draft in <code>src/data/draft.ts</code> and push to update.
             </div>
+          ))}
+          <div className="footnote" style={{ marginTop: 14 }}>
+            Edit the draft in <code>src/data/draft.ts</code> and push to update.
           </div>
         </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div className="card">
-            <div className="card-head"><h2>Data</h2></div>
-            <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <button className="btn primary" style={{ justifyContent: "center" }} onClick={reload}>⟳ Reload scores now</button>
-              <a className="btn" style={{ justifyContent: "center" }} href={dataUrl} download>↓ Download matches.json</a>
+        <div className="admin-col">
+          <div className="rule-card">
+            <h3>Data</h3>
+            <div className="footnote" style={{ marginTop: 0, marginBottom: 14 }}>
+              <span className="chip">last sync {lastSync}</span>
+              <span className="chip">{matches.length} matches loaded</span>
+              <span className="chip">{totals.played} played</span>
+              <span className="chip">{totals.live} live</span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <button className="ghost-btn" style={{ justifyContent: "center" }} onClick={reload}>⟳ Reload scores now</button>
+              <a className="ghost-btn" style={{ justifyContent: "center" }} href={dataUrl} download>↓ Download matches.json</a>
             </div>
           </div>
-          <div className="card">
-            <div className="card-head"><h2>API key</h2></div>
-            <div className="card-body">
-              <div style={{ fontSize: 13, color: "var(--text-2)" }}>
-                <code>FOOTBALL_DATA_KEY</code> is stored as a GitHub repo secret and used only by the
-                CI fetch job. It never reaches the browser.
-              </div>
+          <div className="rule-card">
+            <h3>Where scores come from</h3>
+            <div style={{ fontSize: 13.5, color: "var(--ink-2)" }}>
+              <p style={{ marginTop: 0 }}>
+                Baseline results come from <code>football-data.org</code> via a scheduled CI job
+                (~every 10 min); the browser layers ESPN live scores on top every 60s.
+              </p>
+              <p style={{ marginBottom: 0 }}>
+                <code>FOOTBALL_DATA_KEY</code> is a GitHub repo secret used only by the CI fetch
+                job — it never reaches the browser.
+              </p>
             </div>
           </div>
         </div>
